@@ -1,0 +1,72 @@
+#include<iostream>
+#include<cstring>
+#include<arpa/inet.h>
+#include<unistd.h>
+#include<stdlib.h>
+#include<thread>
+void read_from_server(int sockfd) {
+    char buffer[1024];
+    while (true) {
+        ssize_t n = recv(sockfd, buffer, sizeof(buffer), 0);
+        if (n <= 0) {
+            std::cerr << "Server closed the connection or error occurred." << std::endl;
+            break;
+        }
+        buffer[n] = '\0';
+        std::cout << buffer;
+    }
+}
+
+void write_to_server(int sockfd, const std::string& username) {
+    // 发送用户名作为第一条消息
+    if (send(sockfd, username.c_str(), username.size(), 0) < 0) {
+        std::cerr << "Error sending username to server." << std::endl;
+        return;
+    }
+    
+    std::string message;
+    while (std::getline(std::cin, message)) {
+    message += "\n";  // 添加换行符，确保服务器和其他客户端能正确显示
+    if (send(sockfd, message.c_str(), message.size(), 0) < 0) {
+        std::cerr << "Error sending message to server." << std::endl;
+        break;
+    }
+    }
+}
+
+//客户器端
+int main(){
+
+    // 1:创建通信的套接字  具体参数含义为：使用IPV4地址，采用流式传输，使用TCP协议。 返回监听的文件描述符
+    int fd_lis=socket(AF_INET,SOCK_STREAM,0);
+    if(fd_lis==-1){
+        perror("socket_listen error!");
+        return -1;
+    }
+    // 2：链接服务器的IP和端口 (IP和端口是addr结构体) 该结构体指定地址类型，通信端口和IP地址
+
+    struct sockaddr_in saddr;
+    saddr.sin_family=AF_INET;
+    saddr.sin_port=htons(9999);
+    inet_pton(AF_INET,"192.168.159.129",&saddr.sin_addr.s_addr);
+    int ret = connect(fd_lis,(struct sockaddr*)&saddr,sizeof(saddr));
+    if(ret==-1){
+        perror("connect _error");
+        return -1;
+    }else{
+        std::cout<<"welcome to chat space! please enter first word as your chat name"<<std::endl;
+        std::string username;
+        std::getline(std::cin, username);
+    //需要两个线程一个处理写 一个处理读
+
+        // 启动读写线程
+        std::thread reader(read_from_server, fd_lis);
+        std::thread writer(write_to_server, fd_lis, username);
+
+        // 等待线程结束
+        reader.join();
+        writer.join();
+
+    close(fd_lis);
+    }
+}

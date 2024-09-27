@@ -1,0 +1,161 @@
+#include<iostream>
+#include<arpa/inet.h>
+#include<unistd.h>
+#include<string>
+#include<sys/epoll.h>
+#include<stdio.h>
+#include<map>
+using namespace std;
+#define max_connect 128
+#define PORT_HOST 6
+struct client_info{
+    int fd_c;
+    std::string name;
+    std::string ip_addr;
+    int host_port;
+};
+
+void broadcast_client_count(const std::map<int, client_info>& mp_client) {
+    std::string client_count_msg = "当前连接的客户端数量: " + std::to_string(mp_client.size()) + "\n";
+    cout<<client_count_msg<<endl;
+}
+
+
+int main(){
+
+    int epld=epoll_create1(0);
+    if(epld<0){
+        perror("epoll 创建失败");
+        return -1;
+    }
+
+    //创建服务器的套接字文件
+    int fd_sock=socket(AF_INET,SOCK_STREAM,0);
+    if(fd_sock==-1){
+        perror("创建套接字失败");
+        return -1;
+    }
+
+    // 绑定用于通信的接口
+
+    struct sockaddr_in addr;
+    addr.sin_family=AF_INET;
+    addr.sin_port=htons(9999);
+    addr.sin_addr.s_addr=INADDR_ANY;
+
+
+    int ret=bind(fd_sock,(struct sockaddr*)&addr,sizeof(addr));
+    if(ret==-1){
+        perror("绑定失败");
+        return -1;
+    }
+
+
+    int fd_listen=listen(fd_sock,max_connect);
+     if(fd_listen==-1){
+        perror("监听失败");
+        return -1;
+     }
+    
+
+    //将监听的socket 放入  epoll；
+    struct epoll_event ev;
+    ev.events=EPOLLIN;
+    ev.data.fd=fd_sock;
+
+    ret=epoll_ctl(epld,EPOLL_CTL_ADD,fd_sock,&ev);
+    if(ret<0){
+        perror("epoll_ctl 错误");
+        return -1;
+    }
+
+
+    //
+    std::map<int,client_info> mp_client;
+    
+    //循环监听
+
+    while(1){
+        struct epoll_event evs[max_connect];
+        //返回监听的结果  多少个有活动
+        int n=epoll_wait(epld,evs,max_connect,-1);
+
+        if(n<0){
+            perror("epoll_wait 错误");
+            break;
+        }
+        for (size_t i = 0; i < n; i++)
+        {   
+            //查看文件描述符是否和监听一致 
+            int fd=evs[i].data.fd;
+            if(fd==fd_sock){
+                //存储连接的客户端信息
+                struct sockaddr_in caddr;
+                int addrlen=sizeof(caddr);
+                int fd_acp=accept(fd_sock,(struct sockaddr*)&caddr,(socklen_t*)&addrlen);
+                if(fd_acp<0){
+                    perror("accept 错误");
+                    continue;
+                }
+                //连接成功 将客户端的信息加入epoll
+                struct epoll_event ev_client;
+                ev_client.events=EPOLLIN;
+                ev_client.data.fd=fd_acp;
+                ret=epoll_ctl(epld,EPOLL_CTL_ADD,fd_acp,&ev_client);
+                if(ret<0){
+                    perror("epoll_ctl_client 出错");
+                    return -1;
+                }
+
+                //网络字节序改为主机字节序
+                char ip_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &(caddr.sin_addr), ip_str, INET_ADDRSTRLEN);
+                int port = ntohs(caddr.sin_port);
+                cout<<"正在连接:  "<<ip_str<<"    端口号"<<ntohs(caddr.sin_port)<<endl;
+
+
+                //将客户端信息存储 方便服务器将客户端的信息转发给除他以外的所有人
+                client_info single_cl;
+                single_cl.fd_c=fd_acp;
+                single_cl.name="";
+                single_cl.ip_addr=ip_str;
+                single_cl.host_port=port;
+                mp_client[fd_acp]=single_cl;
+                cout<<"连接成功:  "<<ip_str<<endl;
+            broadcast_client_count(mp_client);
+            }
+            else{
+                char buff[1024];
+                int n=read(fd,buff,1024);
+                if(n<0){
+                    break;
+                }else if(n==0){
+                    close(fd);
+                    std::cout<<"断开连接:  "<<mp_client[fd].ip_addr<<"    端口号"<<mp_client[fd].host_port<<endl;
+                    epoll_ctl(epld,EPOLL_CTL_DEL,fd,0);
+                    mp_client.erase(fd);
+                }
+                else{
+                    std::string msg(buff,n);
+                    if (mp_client[fd].name == "") {
+                            mp_client[fd].name = msg.substr(0, msg.find("\n"));  // 将第一条消息作为名字，并去掉换行符
+                            std::cout << "客户端 " << mp_client[fd].name << " 已连接." << std::endl;
+                        }else{
+                        string name = mp_client[fd].name;
+                            // 转发给其他人
+                        for (auto pair : mp_client) {
+                            if (pair.first != fd) {
+                            std::string full_msg = '[' + name + "]: " + msg;
+                            write(pair.first, full_msg.c_str(), full_msg.size());
+                        }
+                    }
+                }
+            }       
+        }
+        
+    }
+    }
+     close(epld);
+    close(fd_sock);
+     return 0;
+}
